@@ -326,10 +326,10 @@ public class FlinkBlueGreenDeploymentControllerTest {
     }
 
     /**
-     * After a failed transition (GREEN aborted before RUNNING), the next transition must:
-     * 1. Start from ACTIVE_BLUE / FAILING state (not stuck in TRANSITIONING)
-     * 2. Take a FRESH savepoint — not reuse the expired trigger from the failed attempt
-     * 3. Deploy GREEN with the fresh savepoint path, not the stale one
+     * After a failed transition (GREEN aborted before RUNNING), the next transition must: 1. Start
+     * from ACTIVE_BLUE / FAILING state (not stuck in TRANSITIONING) 2. Take a FRESH savepoint — not
+     * reuse the expired trigger from the failed attempt 3. Deploy GREEN with the fresh savepoint
+     * path, not the stale one
      */
     @ParameterizedTest
     @MethodSource("org.apache.flink.kubernetes.operator.TestUtils#flinkVersions")
@@ -407,11 +407,11 @@ public class FlinkBlueGreenDeploymentControllerTest {
         String secondSpec = UUID.randomUUID().toString();
         simulateChangeInSpec(rs.deployment, secondSpec, ALT_DELETION_DELAY_VALUE, null);
 
-        // Must trigger a NEW savepoint ("savepoint_2"), not reuse the stale trigger
+        // Must trigger a NEW savepoint, not reuse the stale trigger from the failed attempt
         rs = handleSavepoint(rs);
 
-        // Start transition → GREEN must be deployed with "savepoint_2", not stale "savepoint_1"
-        testTransitionToGreen(rs, secondSpec, "savepoint_2");
+        // Start transition → GREEN must be deployed with a fresh savepoint, not stale "savepoint_1"
+        testTransitionToGreen(rs, secondSpec, "savepoint_3");
     }
 
     private static String getFlinkConfigurationValue(
