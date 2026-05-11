@@ -371,9 +371,11 @@ public class FlinkBlueGreenDeploymentControllerTest {
         assertEquals(
                 FlinkBlueGreenDeploymentState.TRANSITIONING_TO_GREEN,
                 rs.reconciledStatus.getBlueGreenState());
+        var flinkDeployments = getFlinkDeployments();
+        assertEquals(2, flinkDeployments.size());
         assertEquals(
                 "savepoint_1",
-                getFlinkDeployments().get(1).getSpec().getJob().getInitialSavepointPath());
+                flinkDeployments.get(1).getSpec().getJob().getInitialSavepointPath());
 
         // GREEN never becomes ready → abort after grace period
         Long reschedDelayMs = 0L;
@@ -389,8 +391,8 @@ public class FlinkBlueGreenDeploymentControllerTest {
         assertEquals(
                 FlinkBlueGreenDeploymentState.ACTIVE_BLUE, rs.reconciledStatus.getBlueGreenState());
         assertNull(
-                "savepointTriggerId must be cleared on abort to force a fresh savepoint next time",
-                rs.reconciledStatus.getSavepointTriggerId());
+                rs.reconciledStatus.getSavepointTriggerId(),
+                "savepointTriggerId must be cleared on abort to force a fresh savepoint next time");
         var suspended =
                 getFlinkDeployments().stream()
                         .filter(d -> JobState.SUSPENDED.equals(d.getSpec().getJob().getState()))
