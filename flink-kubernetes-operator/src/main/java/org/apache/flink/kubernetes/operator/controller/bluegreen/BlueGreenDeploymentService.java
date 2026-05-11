@@ -18,7 +18,6 @@
 package org.apache.flink.kubernetes.operator.controller.bluegreen;
 
 import org.apache.flink.api.common.JobStatus;
-import org.apache.flink.kubernetes.operator.api.spec.JobState;
 import org.apache.flink.kubernetes.operator.api.FlinkBlueGreenDeployment;
 import org.apache.flink.kubernetes.operator.api.FlinkDeployment;
 import org.apache.flink.kubernetes.operator.api.bluegreen.BlueGreenDeploymentType;
@@ -202,17 +201,6 @@ public class BlueGreenDeploymentService {
             BlueGreenDeploymentType blueGreenDeploymentTypeToPatch,
             String childDeploymentName) {
         var deploymentToPatch = context.getDeploymentByType(blueGreenDeploymentTypeToPatch);
-
-        // If the deployment was previously aborted (suspended before reaching RUNNING), its
-        // initialSavepointPath is stale — the Flink JM may have already evicted the trigger.
-        // Skip carry-over so the next attempt starts from a fresh savepoint.
-        if (JobState.SUSPENDED.equals(deploymentToPatch.getSpec().getJob().getState())) {
-            LOG.info(
-                    "Patching FlinkDeployment '{}' (previously suspended, skipping stale savepoint)",
-                    childDeploymentName);
-            return null;
-        }
-
         var initialSavepointPath = deploymentToPatch.getSpec().getJob().getInitialSavepointPath();
 
         if (initialSavepointPath == null || initialSavepointPath.isEmpty()) {
