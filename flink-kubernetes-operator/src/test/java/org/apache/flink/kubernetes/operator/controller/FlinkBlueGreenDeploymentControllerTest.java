@@ -325,6 +325,92 @@ public class FlinkBlueGreenDeploymentControllerTest {
         testTransitionToGreen(rs, customValue, null);
     }
 
+    /**
+     * After a failed transition (GREEN aborted before RUNNING), the next transition must:
+     * 1. Start from ACTIVE_BLUE / FAILING state (not stuck in TRANSITIONING)
+     * 2. Take a FRESH savepoint — not reuse the expired trigger from the failed attempt
+     * 3. Deploy GREEN with the fresh savepoint path, not the stale one
+     */
+    @ParameterizedTest
+    @MethodSource("org.apache.flink.kubernetes.operator.TestUtils#flinkVersions")
+    public void verifyFreshSavepointUsedAfterFailedTransition(FlinkVersion flinkVersion)
+            throws Exception {
+        var blueGreenDeployment =
+                buildSessionCluster(
+                        TEST_DEPLOYMENT_NAME,
+                        TEST_NAMESPACE,
+                        flinkVersion,
+                        null,
+                        UpgradeMode.SAVEPOINT);
+
+        var abortGracePeriodMs = 1200;
+        var reschedulingIntervalMs = 3000;
+        blueGreenDeployment
+                .getSpec()
+                .getConfiguration()
+                .put(ABORT_GRACE_PERIOD.key(), String.valueOf(abortGracePeriodMs));
+        blueGreenDeployment
+                .getSpec()
+                .getConfiguration()
+                .put(
+                        RECONCILIATION_RESCHEDULING_INTERVAL.key(),
+                        String.valueOf(reschedulingIntervalMs));
+
+        // Initial deployment (ACTIVE_BLUE)
+        var rs = executeBasicDeployment(flinkVersion, blueGreenDeployment, false, null);
+
+        // ── First transition attempt ───────────────────────────────────────────────
+        String firstSpec = UUID.randomUUID().toString();
+        simulateChangeInSpec(rs.deployment, firstSpec, ALT_DELETION_DELAY_VALUE, null);
+
+        // Trigger savepoint of BLUE ("savepoint_1") → SAVEPOINTING_BLUE → ACTIVE_BLUE
+        rs = handleSavepoint(rs);
+
+        // Start transition → GREEN created with "savepoint_1" → TRANSITIONING_TO_GREEN
+        rs = reconcile(rs.deployment);
+        assertEquals(
+                FlinkBlueGreenDeploymentState.TRANSITIONING_TO_GREEN,
+                rs.reconciledStatus.getBlueGreenState());
+        assertEquals(
+                "savepoint_1",
+                getFlinkDeployments().get(1).getSpec().getJob().getInitialSavepointPath());
+
+        // GREEN never becomes ready → abort after grace period
+        Long reschedDelayMs = 0L;
+        for (int i = 0; i < 2; i++) {
+            rs = reconcile(rs.deployment);
+            reschedDelayMs = rs.updateControl.getScheduleDelay().get();
+        }
+        Thread.sleep(reschedDelayMs);
+        rs = reconcile(rs.deployment);
+
+        // State after rollback: ACTIVE_BLUE + FAILING, GREEN is SUSPENDED
+        assertFailingJobStatus(rs);
+        assertEquals(
+                FlinkBlueGreenDeploymentState.ACTIVE_BLUE, rs.reconciledStatus.getBlueGreenState());
+        assertNull(
+                "savepointTriggerId must be cleared on abort to force a fresh savepoint next time",
+                rs.reconciledStatus.getSavepointTriggerId());
+        var suspended =
+                getFlinkDeployments().stream()
+                        .filter(d -> JobState.SUSPENDED.equals(d.getSpec().getJob().getState()))
+                        .findFirst()
+                        .orElseThrow(() -> new AssertionError("No SUSPENDED deployment found"));
+        assertEquals(
+                "savepoint_1",
+                suspended.getSpec().getJob().getInitialSavepointPath());
+
+        // ── Second transition attempt ──────────────────────────────────────────────
+        String secondSpec = UUID.randomUUID().toString();
+        simulateChangeInSpec(rs.deployment, secondSpec, ALT_DELETION_DELAY_VALUE, null);
+
+        // Must trigger a NEW savepoint ("savepoint_2"), not reuse the stale trigger
+        rs = handleSavepoint(rs);
+
+        // Start transition → GREEN must be deployed with "savepoint_2", not stale "savepoint_1"
+        testTransitionToGreen(rs, secondSpec, "savepoint_2");
+    }
+
     private static String getFlinkConfigurationValue(
             FlinkDeploymentSpec flinkDeploymentSpec, String propertyName) {
         return flinkDeploymentSpec.getFlinkConfiguration().get(propertyName).asText();
