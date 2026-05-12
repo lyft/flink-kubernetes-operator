@@ -372,6 +372,13 @@ public class BlueGreenUtils {
             String location = lastCheckpoint.getLocation().replace("file:", "");
             LOG.info("Using Blue/Green savepoint/checkpoint: " + location);
             adjustedSpec.getTemplate().getSpec().getJob().setInitialSavepointPath(location);
+            // Force savepoint upgrade mode so the Flink child operator uses initialSavepointPath
+            // rather than falling back to stale HA ConfigMap state. In last-state mode the child
+            // operator silently prefers HA metadata over initialSavepointPath, which causes the
+            // new deployment to restore from an old checkpoint instead of the fresh savepoint
+            // FBGD just took. Savepoint mode has no running job to savepoint during bootstrap
+            // (the deployment is suspended), so it falls through to initialSavepointPath directly.
+            adjustedSpec.getTemplate().getSpec().getJob().setUpgradeMode(UpgradeMode.SAVEPOINT);
         }
 
         flinkDeployment.setSpec(adjustedSpec.getTemplate().getSpec());
