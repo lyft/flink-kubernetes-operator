@@ -398,9 +398,10 @@ public class FlinkBlueGreenDeploymentControllerTest {
                         .filter(d -> JobState.SUSPENDED.equals(d.getSpec().getJob().getState()))
                         .findFirst()
                         .orElseThrow(() -> new AssertionError("No SUSPENDED deployment found"));
-        assertEquals(
-                "savepoint_1",
-                suspended.getSpec().getJob().getInitialSavepointPath());
+        assertNull(
+                suspended.getSpec().getJob().getInitialSavepointPath(),
+                "initialSavepointPath must be cleared on abort so the next deploy does not "
+                        + "reuse a savepoint from a failed attempt (may be arbitrarily old)");
 
         // ── Second transition attempt ──────────────────────────────────────────────
         String secondSpec = UUID.randomUUID().toString();

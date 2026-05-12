@@ -548,10 +548,15 @@ public class BlueGreenDeploymentService {
             FlinkBlueGreenDeploymentState nextState,
             String deploymentName) {
 
+        // Clear stale savepoint path before suspending so the K8s update persists the null.
+        // carryOverSavepoint() reads spec.job.initialSavepointPath on the next PATCH-diff
+        // reconcile; if the deployment failed before reaching RUNNING, this field is never
+        // cleared by the normal success path and can stay stale for days.
+        nextDeployment.getSpec().getJob().setInitialSavepointPath(null);
         suspendFlinkDeployment(context, nextDeployment);
 
-        // Clear stale savepoint trigger so the next transition takes a fresh savepoint rather
-        // than reusing an expired trigger ID (Flink JM evicts trigger IDs after ~300s TTL).
+        // Clear stale savepoint trigger so the next TRANSITION-diff reconcile triggers a fresh
+        // savepoint rather than re-fetching an already-evicted trigger ID (~300s TTL on Flink JM).
         context.getDeploymentStatus().setSavepointTriggerId(null);
 
         FlinkBlueGreenDeploymentState previousState =
