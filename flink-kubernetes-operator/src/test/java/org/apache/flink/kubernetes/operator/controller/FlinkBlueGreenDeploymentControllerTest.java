@@ -297,24 +297,20 @@ public class FlinkBlueGreenDeploymentControllerTest {
 
         assertTrue(rs.updateControl.isPatchStatus());
 
-        // The first job should be RUNNING, the second should be SUSPENDED
         assertFailingJobStatus(rs);
         // No longer TRANSITIONING_TO_GREEN and rolled back to ACTIVE_BLUE
         assertEquals(
                 FlinkBlueGreenDeploymentState.ACTIVE_BLUE, rs.reconciledStatus.getBlueGreenState());
+        // The failed child is deleted on abort (instead of suspended), so only the active
+        // BLUE deployment should remain. Deletion prevents stale status.upgradeSavepointPath
+        // on the failed child from being read by the next transition's restoreJob().
         var flinkDeployments = getFlinkDeployments();
-        assertEquals(2, flinkDeployments.size());
+        assertEquals(1, flinkDeployments.size());
         assertEquals(
                 JobStatus.RUNNING, flinkDeployments.get(0).getStatus().getJobStatus().getState());
         assertEquals(
                 ReconciliationState.DEPLOYED,
                 flinkDeployments.get(0).getStatus().getReconciliationStatus().getState());
-        // The B/G controller changes the State = SUSPENDED, the actual suspension is done by the
-        // FlinkDeploymentController
-        assertEquals(JobState.SUSPENDED, flinkDeployments.get(1).getSpec().getJob().getState());
-        assertEquals(
-                ReconciliationState.UPGRADING,
-                flinkDeployments.get(1).getStatus().getReconciliationStatus().getState());
         assertTrue(instantStrToMillis(rs.reconciledStatus.getAbortTimestamp()) > 0);
         // savepointTriggerId must be cleared on abort so the next transition
         // triggers a fresh savepoint instead of reusing a stale triggerId
@@ -326,6 +322,96 @@ public class FlinkBlueGreenDeploymentControllerTest {
 
         // Initiate the redeployment
         testTransitionToGreen(rs, customValue, null);
+    }
+
+    /**
+     * abortDeployment deletes the failed child FD instead of suspending it. Keeping a suspended
+     * child around leaves its status subresource (notably status.jobStatus.upgradeSavepointPath)
+     * intact, which AbstractJobReconciler.restoreJob() then reads on the next transition and uses
+     * to restore the job — silently shadowing the fresh spec.initialSavepointPath that FBGD writes.
+     *
+     * <p>This test asserts that after an aborted transition the failed child is gone, and the next
+     * transition fresh-creates it with the new savepoint.
+     */
+    @ParameterizedTest
+    @MethodSource("org.apache.flink.kubernetes.operator.TestUtils#flinkVersions")
+    public void verifyFailedChildDeletedOnAbort(FlinkVersion flinkVersion) throws Exception {
+        var blueGreenDeployment =
+                buildSessionCluster(
+                        TEST_DEPLOYMENT_NAME,
+                        TEST_NAMESPACE,
+                        flinkVersion,
+                        null,
+                        UpgradeMode.SAVEPOINT);
+
+        var abortGracePeriodMs = 1200;
+        var reschedulingIntervalMs = 3000;
+        blueGreenDeployment
+                .getSpec()
+                .getConfiguration()
+                .put(ABORT_GRACE_PERIOD.key(), String.valueOf(abortGracePeriodMs));
+        blueGreenDeployment
+                .getSpec()
+                .getConfiguration()
+                .put(
+                        RECONCILIATION_RESCHEDULING_INTERVAL.key(),
+                        String.valueOf(reschedulingIntervalMs));
+
+        // 1. Initial deploy → ACTIVE_BLUE
+        var rs = executeBasicDeployment(flinkVersion, blueGreenDeployment, false, null);
+        String blueName = getFlinkDeployments().get(0).getMetadata().getName();
+
+        // 2. Spec change → savepoint → start transition to GREEN
+        simulateChangeInSpec(rs.deployment, UUID.randomUUID().toString(), 0, null);
+        rs = handleSavepoint(rs);
+        rs = reconcile(rs.deployment);
+        assertEquals(
+                FlinkBlueGreenDeploymentState.TRANSITIONING_TO_GREEN,
+                rs.reconciledStatus.getBlueGreenState());
+        assertEquals(2, getFlinkDeployments().size());
+
+        // 3. GREEN never becomes ready → abort
+        Long reschedDelayMs = 0L;
+        for (int i = 0; i < 2; i++) {
+            rs = reconcile(rs.deployment);
+            reschedDelayMs = rs.updateControl.getScheduleDelay().get();
+        }
+        Thread.sleep(reschedDelayMs);
+        rs = reconcile(rs.deployment);
+        assertFailingJobStatus(rs);
+        assertEquals(
+                FlinkBlueGreenDeploymentState.ACTIVE_BLUE, rs.reconciledStatus.getBlueGreenState());
+
+        // 4. The failed child must be deleted (not suspended). Only BLUE remains.
+        var remaining = getFlinkDeployments();
+        assertEquals(1, remaining.size(), "failed child should be deleted on abort");
+        assertEquals(blueName, remaining.get(0).getMetadata().getName());
+
+        // 5. Second transition: spec change → fresh savepoint → GREEN is fresh-created.
+        simulateChangeInSpec(rs.deployment, UUID.randomUUID().toString(), 0, null);
+        rs = handleSavepoint(rs);
+        rs = reconcile(rs.deployment);
+        assertEquals(
+                FlinkBlueGreenDeploymentState.TRANSITIONING_TO_GREEN,
+                rs.reconciledStatus.getBlueGreenState());
+
+        var greenAfterRetry =
+                getFlinkDeployments().stream()
+                        .filter(d -> !d.getMetadata().getName().equals(blueName))
+                        .findFirst()
+                        .orElseThrow(
+                                () -> new AssertionError("GREEN should be fresh-created on retry"));
+        // Freshly-created FD must start with no status, so restoreJob() falls into the first-
+        // deployment branch and uses spec.initialSavepointPath rather than status.
+        assertTrue(
+                greenAfterRetry.getStatus() == null
+                        || greenAfterRetry.getStatus().getJobStatus() == null
+                        || greenAfterRetry.getStatus().getJobStatus().getUpgradeSavepointPath()
+                                == null,
+                "freshly created GREEN must not carry status.upgradeSavepointPath");
+        assertNotNull(
+                greenAfterRetry.getSpec().getJob().getInitialSavepointPath(),
+                "GREEN must have a fresh initialSavepointPath in spec");
     }
 
     private static String getFlinkConfigurationValue(
@@ -392,11 +478,9 @@ public class FlinkBlueGreenDeploymentControllerTest {
         assertEquals(
                 FlinkBlueGreenDeploymentState.INITIALIZING_BLUE,
                 rs.reconciledStatus.getBlueGreenState());
+        // The failed child is deleted on abort.
         var flinkDeployments = getFlinkDeployments();
-        assertEquals(1, flinkDeployments.size());
-        // The B/G controller changes the State = SUSPENDED, the actual suspension is done by the
-        // FlinkDeploymentController
-        assertEquals(JobState.SUSPENDED, flinkDeployments.get(0).getSpec().getJob().getState());
+        assertEquals(0, flinkDeployments.size());
 
         // No-op if the spec remains the same
         rs = reconcile(rs.deployment);

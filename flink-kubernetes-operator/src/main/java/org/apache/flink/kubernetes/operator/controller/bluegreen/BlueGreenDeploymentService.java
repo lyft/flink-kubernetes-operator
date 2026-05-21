@@ -559,7 +559,19 @@ public class BlueGreenDeploymentService {
             FlinkBlueGreenDeploymentState nextState,
             String deploymentName) {
 
-        suspendFlinkDeployment(context, nextDeployment);
+        // Delete the failed child rather than suspending it. Keeping a suspended FD around leaves
+        // its status subresource (notably status.jobStatus.upgradeSavepointPath) on the cluster.
+        // createOrReplace on the next transition writes a fresh spec but does not touch status,
+        // so AbstractJobReconciler.restoreJob() would read the stale savepoint path and restore
+        // the job from it. Deleting forces the next transition to use the first-deployment code
+        // path, which reads spec.initialSavepointPath correctly.
+        boolean deleted = deleteFlinkDeployment(nextDeployment, context);
+        if (!deleted) {
+            LOG.warn(
+                    "Failed to delete child '{}' during abort; falling back to suspend",
+                    deploymentName);
+            suspendFlinkDeployment(context, nextDeployment);
+        }
 
         FlinkBlueGreenDeploymentState previousState =
                 getPreviousState(nextState, context.getDeployments());
