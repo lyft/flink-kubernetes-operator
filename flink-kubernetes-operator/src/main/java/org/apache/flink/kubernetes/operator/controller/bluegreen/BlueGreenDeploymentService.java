@@ -134,10 +134,18 @@ public class BlueGreenDeploymentService {
                                 .rescheduleAfter(getReconciliationReschedInterval(context));
                     }
 
-                    setLastReconciledSpec(context);
                     try {
-                        return startTransition(
-                                context, currentBlueGreenDeploymentType, currentFlinkDeployment);
+                        var result =
+                                startTransition(
+                                        context,
+                                        currentBlueGreenDeploymentType,
+                                        currentFlinkDeployment);
+                        // Only stamp lastReconciledSpec after the transition
+                        // succeeds. If stamped before and the transition
+                        // fails/aborts, lastReconciledSpec drifts from the
+                        // active child's actual spec
+                        setLastReconciledSpec(context);
+                        return result;
                     } catch (Exception e) {
                         var error = "Could not start Transition. Details: " + e.getMessage();
                         context.getDeploymentStatus().setSavepointTriggerId(null);
@@ -551,11 +559,24 @@ public class BlueGreenDeploymentService {
             FlinkBlueGreenDeploymentState nextState,
             String deploymentName) {
 
-        suspendFlinkDeployment(context, nextDeployment);
+        // Delete the failed child rather than suspending it. Keeping a suspended FD around leaves
+        // its status subresource (notably status.jobStatus.upgradeSavepointPath) on the cluster.
+        // createOrReplace on the next transition writes a fresh spec but does not touch status,
+        // so AbstractJobReconciler.restoreJob() would read the stale savepoint path and restore
+        // the job from it. Deleting forces the next transition to use the first-deployment code
+        // path, which reads spec.initialSavepointPath correctly.
+        boolean deleted = deleteFlinkDeployment(nextDeployment, context);
+        if (!deleted) {
+            LOG.warn(
+                    "Failed to delete child '{}' during abort; falling back to suspend",
+                    deploymentName);
+            suspendFlinkDeployment(context, nextDeployment);
+        }
 
         FlinkBlueGreenDeploymentState previousState =
                 getPreviousState(nextState, context.getDeployments());
         context.getDeploymentStatus().setBlueGreenState(previousState);
+        context.getDeploymentStatus().setSavepointTriggerId(null);
 
         var error =
                 String.format(
