@@ -23,6 +23,7 @@ import org.apache.flink.kubernetes.operator.api.FlinkDeployment;
 import org.apache.flink.kubernetes.operator.api.bluegreen.BlueGreenDeploymentType;
 import org.apache.flink.kubernetes.operator.api.bluegreen.BlueGreenDiffType;
 import org.apache.flink.kubernetes.operator.api.status.FlinkBlueGreenDeploymentState;
+import org.apache.flink.kubernetes.operator.api.status.FlinkBlueGreenDeploymentStatus;
 import org.apache.flink.kubernetes.operator.api.status.Savepoint;
 import org.apache.flink.kubernetes.operator.api.status.SavepointFormatType;
 import org.apache.flink.kubernetes.operator.api.status.SnapshotTriggerType;
@@ -405,6 +406,20 @@ public class BlueGreenDeploymentService {
         }
     }
 
+    private UpdateControl<FlinkBlueGreenDeployment> finalizeSuspendedDeployment(
+            BlueGreenContext context, FlinkBlueGreenDeploymentState nextState) {
+
+        LOG.info(
+                "Finalizing suspended deployment '{}' to {} state",
+                context.getDeploymentName(),
+                nextState);
+
+        resetTransitionMarkers(context.getDeploymentStatus());
+
+        return patchStatusUpdateControl(context, nextState, JobStatus.SUSPENDED, null)
+                .rescheduleAfter(0);
+    }
+
     private UpdateControl<FlinkBlueGreenDeployment> handleSpecChangesDuringTransition(
             BlueGreenContext context, BlueGreenDeploymentType currentBlueGreenDeploymentType) {
         if (hasSpecChanged(context)) {
@@ -576,7 +591,7 @@ public class BlueGreenDeploymentService {
         FlinkBlueGreenDeploymentState previousState =
                 getPreviousState(nextState, context.getDeployments());
         context.getDeploymentStatus().setBlueGreenState(previousState);
-        context.getDeploymentStatus().setSavepointTriggerId(null);
+        resetTransitionMarkers(context.getDeploymentStatus());
 
         var error =
                 String.format(
@@ -622,14 +637,18 @@ public class BlueGreenDeploymentService {
 
         LOG.info("Finalizing deployment '{}' to {} state", context.getDeploymentName(), nextState);
 
-        context.getDeploymentStatus().setDeploymentReadyTimestamp(millisToInstantStr(0));
-        context.getDeploymentStatus().setAbortTimestamp(millisToInstantStr(0));
-        context.getDeploymentStatus().setSavepointTriggerId(null);
+        resetTransitionMarkers(context.getDeploymentStatus());
 
         return patchStatusUpdateControl(context, nextState, JobStatus.RUNNING, null);
     }
 
     // ==================== Common Utility Methods ====================
+
+    private static void resetTransitionMarkers(FlinkBlueGreenDeploymentStatus status) {
+        status.setDeploymentReadyTimestamp(millisToInstantStr(0));
+        status.setAbortTimestamp(millisToInstantStr(0));
+        status.setSavepointTriggerId(null);
+    }
 
     public static UpdateControl<FlinkBlueGreenDeployment> patchStatusUpdateControl(
             BlueGreenContext context,
