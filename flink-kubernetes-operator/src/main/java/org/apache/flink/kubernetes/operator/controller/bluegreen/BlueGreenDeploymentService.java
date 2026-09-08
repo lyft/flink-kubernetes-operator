@@ -533,6 +533,13 @@ public class BlueGreenDeploymentService {
             throw new IllegalStateException("Unexpected abortTimestamp == 0");
         }
 
+        // The next deployment is not ready right now, so any previously recorded
+        // "ready" timestamp from an earlier RUNNING event in this same transition is
+        // stale. Clear it so that once the deployment becomes ready again, shouldWeDelete
+        // restarts the deletion-delay window from scratch instead of reusing a timestamp
+        // left over from a prior flapping/failed attempt.
+        context.getDeploymentStatus().setDeploymentReadyTimestamp(millisToInstantStr(0));
+
         if (abortTimestamp < System.currentTimeMillis()) {
             return abortDeployment(context, nextDeployment, nextState, deploymentName);
         } else {
