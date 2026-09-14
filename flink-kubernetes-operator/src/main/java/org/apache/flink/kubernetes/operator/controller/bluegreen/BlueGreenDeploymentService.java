@@ -406,20 +406,6 @@ public class BlueGreenDeploymentService {
         }
     }
 
-    private UpdateControl<FlinkBlueGreenDeployment> finalizeSuspendedDeployment(
-            BlueGreenContext context, FlinkBlueGreenDeploymentState nextState) {
-
-        LOG.info(
-                "Finalizing suspended deployment '{}' to {} state",
-                context.getDeploymentName(),
-                nextState);
-
-        resetTransitionMarkers(context.getDeploymentStatus());
-
-        return patchStatusUpdateControl(context, nextState, JobStatus.SUSPENDED, null)
-                .rescheduleAfter(0);
-    }
-
     private UpdateControl<FlinkBlueGreenDeployment> handleSpecChangesDuringTransition(
             BlueGreenContext context, BlueGreenDeploymentType currentBlueGreenDeploymentType) {
         if (hasSpecChanged(context)) {
