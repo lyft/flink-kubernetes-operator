@@ -70,6 +70,7 @@ import static org.apache.flink.kubernetes.operator.api.utils.BaseTestUtils.SAMPL
 import static org.apache.flink.kubernetes.operator.api.utils.BaseTestUtils.TEST_DEPLOYMENT_NAME;
 import static org.apache.flink.kubernetes.operator.api.utils.BaseTestUtils.TEST_NAMESPACE;
 import static org.apache.flink.kubernetes.operator.utils.bluegreen.BlueGreenUtils.instantStrToMillis;
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -313,12 +314,6 @@ public class FlinkBlueGreenDeploymentControllerTest {
         assertEquals(
                 ReconciliationState.DEPLOYED,
                 flinkDeployments.get(0).getStatus().getReconciliationStatus().getState());
-        // The B/G controller changes the State = SUSPENDED, the actual suspension is done by the
-        // FlinkDeploymentController
-        assertEquals(JobState.SUSPENDED, flinkDeployments.get(1).getSpec().getJob().getState());
-        assertEquals(
-                ReconciliationState.UPGRADING,
-                flinkDeployments.get(1).getStatus().getReconciliationStatus().getState());
         assertEquals(0, instantStrToMillis(rs.reconciledStatus.getAbortTimestamp()));
         // savepointTriggerId must be cleared on abort so the next transition
         // triggers a fresh savepoint instead of reusing a stale triggerId
@@ -517,13 +512,13 @@ public class FlinkBlueGreenDeploymentControllerTest {
         assertEquals(
                 FlinkBlueGreenDeploymentState.ACTIVE_BLUE, rs.reconciledStatus.getBlueGreenState());
         assertEquals(
+                1,
+                getFlinkDeployments().size(),
+                "the failed Green child is deleted (not suspended) on abort");
+        assertEquals(
                 JobState.RUNNING,
                 getFlinkDeployments().get(0).getSpec().getJob().getState(),
                 "Blue must keep running after the abort");
-        assertEquals(
-                JobState.SUSPENDED,
-                getFlinkDeployments().get(1).getSpec().getJob().getState(),
-                "Green must be suspended on abort while Blue keeps running");
         assertEquals(
                 0,
                 instantStrToMillis(rs.reconciledStatus.getDeploymentReadyTimestamp()),
